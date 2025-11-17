@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Freelance Assistant",
+  "version": "0.1.0",
+  "description": "AI-powered assistant for freelance proposals on any platform",
+  "permissions": [
+    "storage"
+  ],
+   "host_permissions": [
+    "http://localhost:5173/*"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Freelance Assistant"
+  }
+}
