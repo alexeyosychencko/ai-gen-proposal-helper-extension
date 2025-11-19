@@ -1,14 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button, TextArea, Card } from '../common';
 import { UI, MESSAGES } from '../../constants/config';
+
+const JOB_DESCRIPTION_KEY = 'upwork_helper_job_description';
 
 interface JobInputProps {
   onGenerate: (jobDescription: string) => void;
   isLoading: boolean;
+  initialValue?: string;
 }
 
-export const JobInput: React.FC<JobInputProps> = ({ onGenerate, isLoading }) => {
-  const [jobDescription, setJobDescription] = useState('');
+export const JobInput: React.FC<JobInputProps> = ({ onGenerate, isLoading, initialValue = '' }) => {
+  const [jobDescription, setJobDescription] = useState(initialValue);
+
+  // Save to localStorage whenever jobDescription changes
+  useEffect(() => {
+    if (jobDescription) {
+      localStorage.setItem(JOB_DESCRIPTION_KEY, jobDescription);
+    }
+  }, [jobDescription]);
 
   const handleGenerate = () => {
     const trimmedJob = jobDescription.trim();

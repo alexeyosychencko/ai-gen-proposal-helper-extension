@@ -10,13 +10,15 @@ interface RegenerateFormProps {
 }
 
 export const RegenerateForm: React.FC<RegenerateFormProps> = ({
-  _previousProposal,
-  _previousContext,
+  previousProposal,
+  previousContext,
   onRegenerate,
   isLoading,
   onCancel,
 }) => {
-  const [feedback, setFeedback] = useState('');
+    const asd = previousProposal;
+    const zxc = previousContext;
+    const [feedback, setFeedback] = useState('');
 
   const handleRegenerate = () => {
     if (!feedback.trim()) {
