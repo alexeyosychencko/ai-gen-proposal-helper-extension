@@ -5,451 +5,420 @@ import OpenAI from "openai";
 
 // Types for intermediate results
 interface JobExtraction {
-  coreProblem: string; // In client's words
-  keyRequirements: string[];
-  mustHaveSkills: string[];
-  tone: "formal" | "casual" | "technical";
-  personalizationHooks: string[]; // Specific details for personalization
-  clientPriorities: string[];
+	coreProblem: string;
+	projectGoal: string; // What they ultimately want to achieve
+	tools: string[]; // Tools mentioned (GHL, Zapier, etc)
+	keyRequirements: string[];
+	tone: "formal" | "casual" | "technical";
+	personalizationHooks: string[];
 }
 
-interface MethodologyPlan {
-  approach: string; // Overall approach
-  steps: string[]; // Concrete steps
-  deliverables: string[];
-  timeline?: string;
+interface TechnicalAnalysis {
+	feasibility: string; // What can be implemented now vs needs info
+	potentialRisks: string; // Potential issues or pitfalls
+	solutionPlan: string; // Concrete technical approach
 }
 
 // Main action for generating proposal
 export const generateProposal = action({
-  args: {
-    userId: v.string(),
-    jobDescription: v.string(),
-    userFeedback: v.optional(v.string()), // For regeneration
-    previousProposal: v.optional(v.string()),
-    previousContext: v.optional(v.string()), // Save context
-  },
-  handler: async (ctx, args): Promise<{
-    proposal: string;
-    context: string; // For regeneration
-  }> => {
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+	args: {
+		userId: v.string(),
+		jobDescription: v.string(),
+		userFeedback: v.optional(v.string()), // For regeneration
+		previousProposal: v.optional(v.string()),
+		previousContext: v.optional(v.string()), // Save context
+	},
+	handler: async (
+		ctx,
+		args
+	): Promise<{
+		proposal: string;
+		context: string; // For regeneration
+	}> => {
+		const openai = new OpenAI({
+			apiKey: process.env.OPENAI_API_KEY,
+		});
 
-    // STEP 1: Extract & Personalize
-    const jobExtraction = await extractJobDetails(openai, args.jobDescription);
+		// STEP 1: Extract & Personalize
+		const jobExtraction = await extractJobDetails(openai, args.jobDescription);
 
-    // STEP 2: RAG Search - Find Relevant CV Context
-    const relevantExperience = await ctx.runAction(
-      internal.proposals.searchRelevantCV,
-      {
-        userId: args.userId,
-        jobDescription: args.jobDescription,
-      }
-    );
+		// STEP 2: RAG Search - Find Relevant CV Context
+		const relevantExperience = await ctx.runAction(internal.proposals.searchRelevantCV, {
+			userId: args.userId,
+			jobDescription: args.jobDescription,
+		});
 
-    // STEP 3: Generate Methodology
-    const methodology = await generateMethodology(
-      openai,
-      jobExtraction,
-      relevantExperience
-    );
+		// STEP 3: Technical Analysis (Feasibility, Risks, Solution)
+		const technicalAnalysis = await generateTechnicalAnalysis(openai, jobExtraction, relevantExperience);
 
-    // STEP 4: Compose Proposal (AIDA/PAS structure)
-    const proposal = await composeProposal(
-      openai,
-      args.jobDescription,
-      jobExtraction,
-      relevantExperience,
-      methodology,
-      args.userFeedback,
-      args.previousProposal
-    );
+		// STEP 4: Compose Proposal (Dalico Structure)
+		const proposal = await composeProposal(
+			openai,
+			args.jobDescription,
+			jobExtraction,
+			relevantExperience,
+			technicalAnalysis,
+			args.userFeedback,
+			args.previousProposal
+		);
 
-    // Save context for possible regeneration
-    const context = JSON.stringify({
-      jobExtraction,
-      methodology,
-    });
+		// Save context for possible regeneration
+		const context = JSON.stringify({
+			jobExtraction,
+			technicalAnalysis,
+		});
 
-    return {
-      proposal,
-      context,
-    };
-  },
+		return {
+			proposal,
+			context,
+		};
+	},
 });
 
 // STEP 1: Extract job details + personalization hooks
-async function extractJobDetails(
-  openai: OpenAI,
-  jobDescription: string
-): Promise<JobExtraction> {
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: `You are an expert at analyzing freelance job postings. Extract key information for writing a winning personalized proposal.
+async function extractJobDetails(openai: OpenAI, jobDescription: string): Promise<JobExtraction> {
+	const completion = await openai.chat.completions.create({
+		model: "gpt-4o-mini",
+		messages: [
+			{
+				role: "system",
+				content: `You are an expert at analyzing freelance job postings. Extract key information for the "Dalico" proposal method.
 
 Focus on:
-- Client's CORE problem (use their exact words when possible)
-- Must-have requirements and skills
-- Communication tone they prefer
-- Specific details that can be used for personalization (company name, industry, specific pain points, unique aspects)
-- What client values most
+- Client's CORE problem and GOAL (what they want to achieve)
+- Specific TOOLS mentioned (GoHighLevel, Zapier, Make, CRM, etc.)
+- Specific details for personalization and context
 
-Return JSON with this structure:
+Return JSON:
 {
-  "coreProblem": "client's main problem in their words",
-  "keyRequirements": ["requirement 1", "requirement 2"],
-  "mustHaveSkills": ["skill 1", "skill 2"],
+  "coreProblem": "client's main problem",
+  "projectGoal": "ultimate goal (e.g. automate lead flow, reduce manual work)",
+  "tools": ["Tool1", "Tool2"],
+  "keyRequirements": ["req1", "req2"],
   "tone": "formal|casual|technical",
-  "personalizationHooks": ["specific detail 1", "unique aspect 2"],
-  "clientPriorities": ["what matters most", "secondary priority"]
+  "personalizationHooks": ["hook1", "hook2"]
 }`,
-      },
-      {
-        role: "user",
-        content: jobDescription,
-      },
-    ],
-    response_format: { type: "json_object" },
-  });
+			},
+			{
+				role: "user",
+				content: jobDescription,
+			},
+		],
+		response_format: { type: "json_object" },
+	});
 
-  return JSON.parse(completion.choices[0].message.content!);
+	return JSON.parse(completion.choices[0].message.content!);
 }
 
 // STEP 2: Vector search for relevant experience
 export const searchRelevantCV = internalAction({
-  args: {
-    userId: v.string(),
-    jobDescription: v.string(),
-  },
-  handler: async (ctx, args): Promise<string> => {
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+	args: {
+		userId: v.string(),
+		jobDescription: v.string(),
+	},
+	handler: async (ctx, args): Promise<string> => {
+		const openai = new OpenAI({
+			apiKey: process.env.OPENAI_API_KEY,
+		});
 
-    // Generate embedding for job
-    const embeddingResponse = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: args.jobDescription,
-    });
+		// Generate embedding for job
+		const embeddingResponse = await openai.embeddings.create({
+			model: "text-embedding-3-small",
+			input: args.jobDescription,
+		});
 
-    const jobEmbedding = embeddingResponse.data[0].embedding;
+		const jobEmbedding = embeddingResponse.data[0].embedding;
 
-    // Vector search through CV
-    const results = await ctx.vectorSearch("profiles", "by_embedding", {
-      vector: jobEmbedding,
-      limit: 1,
-      filter: (q) => q.eq("userId", args.userId),
-    });
+		// Vector search through CV
+		const results = await ctx.vectorSearch("profiles", "by_embedding", {
+			vector: jobEmbedding,
+			limit: 1,
+			filter: (q) => q.eq("userId", args.userId),
+		});
 
-    if (results.length === 0) {
-      throw new Error("CV not found. Please upload your CV first.");
-    }
+		if (results.length === 0) {
+			throw new Error("CV not found. Please upload your CV first.");
+		}
 
-    // Get full document from database
-    const profile = await ctx.runQuery(internal.proposals.getProfileById, {
-      profileId: results[0]._id,
-    });
+		// Get full document from database
+		const profile = await ctx.runQuery(internal.proposals.getProfileById, {
+			profileId: results[0]._id,
+		});
 
-    if (!profile) {
-      throw new Error("CV not found.");
-    }
+		if (!profile) {
+			throw new Error("CV not found.");
+		}
 
-    return profile.cvText;
-  },
+		return profile.cvText;
+	},
 });
 
 // Helper query to get profile by ID
 export const getProfileById = internalQuery({
-  args: {
-    profileId: v.id("profiles"),
-  },
-  handler: async (ctx, args) => {
-    return await ctx.db.get(args.profileId);
-  },
+	args: {
+		profileId: v.id("profiles"),
+	},
+	handler: async (ctx, args) => {
+		return await ctx.db.get(args.profileId);
+	},
 });
 
-// STEP 3: Generate methodology - how exactly you'll solve the problem
-async function generateMethodology(
-  openai: OpenAI,
-  jobExtraction: JobExtraction,
-  relevantExperience: string
-): Promise<MethodologyPlan> {
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: `You are an expert freelancer creating a project approach plan.
+// STEP 3: Generate Technical Analysis (Feasibility, Risks, Solution)
+async function generateTechnicalAnalysis(
+	openai: OpenAI,
+	jobExtraction: JobExtraction,
+	relevantExperience: string
+): Promise<TechnicalAnalysis> {
+	const completion = await openai.chat.completions.create({
+		model: "gpt-4o-mini",
+		messages: [
+			{
+				role: "system",
+				content: `You are a senior technical freelancer. Analyze this job for a proposal.
 
-Based on the job requirements and candidate's experience, create a clear step-by-step methodology that shows:
-- Professional understanding of the project
-- Concrete approach to solving the problem
-- Specific deliverables
-- Realistic timeline (if possible to estimate)
+Create a Technical Analysis containing:
+1. Feasibility: What can be done immediately vs what needs clarification/access. Be realistic.
+2. Potential Risks: Where might things go wrong? (API limits, data quality, legacy code). Show expertise.
+3. Solution Plan: Specific, concrete technical steps. (e.g. "Create GHL workflow", "Use Zapier webhook"). NO generic "I will do this".
 
 Return JSON:
 {
-  "approach": "overall approach description",
-  "steps": ["step 1", "step 2", "step 3"],
-  "deliverables": ["deliverable 1", "deliverable 2"],
-  "timeline": "estimated timeline if applicable"
-}
-
-Keep it concise but specific. Show competence without over-promising.`,
-      },
-      {
-        role: "user",
-        content: `Job Requirements:
+  "feasibility": "text analyzing feasibility and constraints",
+  "potentialRisks": "text identifying specific risks/issues",
+  "solutionPlan": "text describing the concrete technical solution"
+}`,
+			},
+			{
+				role: "user",
+				content: `Job Analysis:
 ${JSON.stringify(jobExtraction, null, 2)}
 
-Candidate's Relevant Experience:
+My Experience:
 ${relevantExperience}
 
-Create a methodology plan for this project.`,
-      },
-    ],
-    response_format: { type: "json_object" },
-  });
+Generate technical analysis.`,
+			},
+		],
+		response_format: { type: "json_object" },
+	});
 
-  return JSON.parse(completion.choices[0].message.content!);
+	return JSON.parse(completion.choices[0].message.content!);
 }
 
-// STEP 4: Compose final proposal using multi-step reasoning (AIDA/PAS structure)
+// STEP 4: Compose final proposal using Dalico Method
 async function composeProposal(
-  openai: OpenAI,
-  jobDescription: string,
-  jobExtraction: JobExtraction,
-  relevantExperience: string,
-  methodology: MethodologyPlan,
-  userFeedback?: string,
-  previousProposal?: string
+	openai: OpenAI,
+	jobDescription: string,
+	jobExtraction: JobExtraction,
+	relevantExperience: string,
+	technicalAnalysis: TechnicalAnalysis,
+	userFeedback?: string,
+	previousProposal?: string
 ): Promise<string> {
-  // STEP 4.1: Strategic Planning - Think through the best approach
-  const outline = await createStrategicOutline(
-    openai,
-    jobDescription,
-    jobExtraction,
-    relevantExperience,
-    methodology,
-    userFeedback,
-    previousProposal
-  );
+	// STEP 4.1: Strategic Planning
+	const outline = await createStrategicOutline(
+		openai,
+		jobDescription,
+		jobExtraction,
+		relevantExperience,
+		technicalAnalysis,
+		userFeedback,
+		previousProposal
+	);
 
-  // STEP 4.2: Write the actual proposal using the strategic outline
-  const proposal = await writeProposalFromOutline(
-    openai,
-    jobDescription,
-    jobExtraction,
-    outline
-  );
+	// STEP 4.2: Write the actual proposal
+	const proposal = await writeProposalFromOutline(openai, jobDescription, jobExtraction, outline, relevantExperience);
 
-  return proposal;
+	return proposal;
 }
 
-// STEP 4.1: Create strategic outline with reasoning
+// STEP 4.1: Create strategic outline with Dalico Structure
 interface ProposalOutline {
-  hookStrategy: string; // Which personalization angle to use and why
-  selectedHook: string; // The actual hook text
-  problemRestatement: string; // How to restate their problem
-  valueProposition: string; // Key points for "why me" section
-  keyExperiencePoints: string[]; // Specific experience to highlight
-  methodologyPresentation: string; // How to present the approach
-  callToAction: string; // The closing CTA
-  reasoning: string; // Overall strategic reasoning
+	taskBreakdown: string; // Analysis of the task
+	feasibilityCheck: string; // What can be done / constraints
+	riskAssessment: string; // Critical view on issues
+	solutionPlan: string; // Concrete steps
+	clarifyingQuestion: string; // The question
+	experienceReference: string; // "Check similar work..."
 }
 
 async function createStrategicOutline(
-  openai: OpenAI,
-  jobDescription: string,
-  jobExtraction: JobExtraction,
-  relevantExperience: string,
-  methodology: MethodologyPlan,
-  userFeedback?: string,
-  previousProposal?: string
+	openai: OpenAI,
+	jobDescription: string,
+	jobExtraction: JobExtraction,
+	relevantExperience: string,
+	technicalAnalysis: TechnicalAnalysis,
+	userFeedback?: string,
+	previousProposal?: string
 ): Promise<ProposalOutline> {
-  const systemPrompt = `You are a strategic proposal consultant. Your job is to THINK THROUGH the best approach before writing.
+	const systemPrompt = `You are a strategic proposal consultant using the "Dalico Method".
+  
+Structure logic:
+1. Task Breakdown: Analyze goal & tools. Start with understanding, not "I can".
+2. Feasibility: What is ready? What is missing? Constraints?
+3. Risks: Show expertise by predicting issues.
+4. Solution: Specific technical workflow/automation description.
+5. Question: One specific question.
+6. Experience: Reference specific past work from experience provided.
 
-Analyze the job, client priorities, and available experience to create a winning strategy.
+Return a strategic outline in JSON.`;
 
-Consider:
-- Which personalization hook will resonate most?
-- What problem restatement will show deep understanding?
-- Which experience points are most relevant (avoid CV dumping)?
-- How to present methodology to address their priorities?
-- What tone and style will work best?
-
-Return a strategic outline in JSON format with your reasoning.`;
-
-  const userPrompt = previousProposal
-    ? `RETHINK the proposal strategy based on this feedback:
+	const userPrompt = previousProposal
+		? `RETHINK the proposal strategy based on this feedback:
 ${userFeedback}
 
 Previous proposal:
 ${previousProposal}
 
-Job Context:
-Core Problem: ${jobExtraction.coreProblem}
-Personalization Hooks: ${jobExtraction.personalizationHooks.join(", ")}
-Client Priorities: ${jobExtraction.clientPriorities.join(", ")}
-Tone: ${jobExtraction.tone}
+Job: ${jobDescription}
+Tools: ${jobExtraction.tools.join(", ")}
+Context:
+${JSON.stringify(technicalAnalysis, null, 2)}
 
-Create a new strategic outline that addresses the feedback.`
-    : `Create a strategic outline for an Upwork proposal:
+Create a new Dalico strategic outline.`
+		: `Create a strategic outline for a proposal (Dalico Method):
 
 Job Description:
 ${jobDescription}
 
-Extracted Details:
-- Core Problem: ${jobExtraction.coreProblem}
-- Key Requirements: ${jobExtraction.keyRequirements.join(", ")}
-- Personalization Hooks: ${jobExtraction.personalizationHooks.join(", ")}
-- Client Priorities: ${jobExtraction.clientPriorities.join(", ")}
-- Tone: ${jobExtraction.tone}
+Extracted Info:
+- Tools: ${jobExtraction.tools.join(", ")}
+- Goal: ${jobExtraction.projectGoal}
+- Details: ${jobExtraction.personalizationHooks.join(", ")}
 
-Candidate's Experience:
-${relevantExperience.substring(0, 1000)}...
+Technical Analysis:
+- Feasibility: ${technicalAnalysis.feasibility}
+- Risks: ${technicalAnalysis.potentialRisks}
+- Solution: ${technicalAnalysis.solutionPlan}
 
-Methodology:
-Approach: ${methodology.approach}
-Steps: ${methodology.steps.join(" → ")}
+Experience to Reference:
+${relevantExperience.substring(0, 500)}
 
-Think through the best strategy and return JSON:
+Return JSON:
 {
-  "hookStrategy": "reasoning for which personalization angle to use",
-  "selectedHook": "the actual hook text (1-2 sentences)",
-  "problemRestatement": "how to restate their problem empathetically",
-  "valueProposition": "key 'why me' message",
-  "keyExperiencePoints": ["specific point 1", "specific point 2"],
-  "methodologyPresentation": "how to present the approach",
-  "callToAction": "the closing CTA",
-  "reasoning": "overall strategic thinking"
+  "taskBreakdown": "analytical intro sentence(s)",
+  "feasibilityCheck": "feasibility & constraints text",
+  "riskAssessment": "potential issues text",
+  "solutionPlan": "concrete solution text",
+  "clarifyingQuestion": "one good question",
+  "experienceReference": "sentence referencing specific similar project"
 }`;
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
-      {
-        role: "user",
-        content: userPrompt,
-      },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.7,
-  });
+	const completion = await openai.chat.completions.create({
+		model: "gpt-4o-mini",
+		messages: [
+			{
+				role: "system",
+				content: systemPrompt,
+			},
+			{
+				role: "user",
+				content: userPrompt,
+			},
+		],
+		response_format: { type: "json_object" },
+		temperature: 0.7,
+	});
 
-  return JSON.parse(completion.choices[0].message.content!);
+	return JSON.parse(completion.choices[0].message.content!);
 }
 
-// STEP 4.2: Write the final proposal from the strategic outline
+// STEP 4.2: Write the final proposal
 async function writeProposalFromOutline(
-  openai: OpenAI,
-  jobDescription: string,
-  jobExtraction: JobExtraction,
-  outline: ProposalOutline
+	openai: OpenAI,
+	jobDescription: string,
+	jobExtraction: JobExtraction,
+	outline: ProposalOutline,
+	relevantExperience: string
 ): Promise<string> {
-  const systemPrompt = `You are an expert Upwork proposal writer with 40% response rate.
+	const systemPrompt = `You are a professional freelancer. Write a proposal using the provided DALICO structure.
 
-Write proposals that WIN using AIDA/PAS framework:
+STRUCTURE (adhere strictly):
+1. **Analysis**: Start immediately with understanding the task/goal. No "Hi", No "I can do this".
+2. **Feasibility**: What you can do now vs what you need.
+3. **Risks**: Potential issues (be honest/expert).
+4. **Solution**: Concrete plan (use automation terms, workflow steps).
+5. **Question**: The clarifying question.
+6. **Experience**: "You can check similar work in my portfolio..."
+7. **Sign-off**: "Best, [Name from CV]" (Extract name from experience, else use "Best, [Your Name]")
 
-STRUCTURE:
-1. PERSONALIZED HOOK (use the provided hook)
-2. RESTATE THEIR PROBLEM (use provided restatement)
-3. "I CAN HELP" + WHY ME (use provided value prop and experience points)
-4. HOW I'LL DO IT (use provided methodology presentation)
-5. CLEAR NEXT STEP (use provided CTA)
+TONE & STYLE:
+- Simple, human "freelancer" English.
+- NO "rockstar", "ninja", "perfect fit".
+- NO fluff.
+- Max 1 emoji at start (optional).
+- Total length: 2-4 short paragraphs.
+- Format: Clean paragraphs, easy to read.`;
 
-TONE: ${jobExtraction.tone}
-
-CRITICAL RULES:
-- Keep it concise (3 short paragraphs max)
-- NO fluff or filler
-- NO weak phrases: "I think", "I believe", "I should be able to"
-- Be confident and specific
-- Focus on THEIR needs, not your credentials
-- Show, don't tell
-- Write naturally - don't sound like a template`;
-
-  const userPrompt = `Write a winning Upwork proposal using this strategic outline:
-
-STRATEGIC OUTLINE:
+	const userPrompt = `Write the proposal based on this outline:
 ${JSON.stringify(outline, null, 2)}
 
-Job Description (for context):
-${jobDescription}
+Candidate Context (for name and style):
+${relevantExperience.substring(0, 500)}
 
-Write the complete proposal as natural, flowing text (not bullet points or sections).
-Make it conversational and compelling. Follow the AIDA structure but make it feel personal and authentic.`;
+Ensure it flows naturally but keeps the structure.`;
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
-      {
-        role: "user",
-        content: userPrompt,
-      },
-    ],
-    temperature: 0.8,
-  });
+	const completion = await openai.chat.completions.create({
+		model: "gpt-4o-mini",
+		messages: [
+			{
+				role: "system",
+				content: systemPrompt,
+			},
+			{
+				role: "user",
+				content: userPrompt,
+			},
+		],
+		temperature: 0.7, // Slightly lower temp for more structured output
+	});
 
-  return completion.choices[0].message.content!;
+	return completion.choices[0].message.content!;
 }
 
 // Optional: Separate query for match score (for UI)
 export const calculateMatchScore = action({
-  args: {
-    userId: v.string(),
-    jobDescription: v.string(),
-  },
-  handler: async (ctx, args): Promise<{
-    score: number;
-    strengths: string[];
-    gaps: string[];
-  }> => {
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+	args: {
+		userId: v.string(),
+		jobDescription: v.string(),
+	},
+	handler: async (
+		ctx,
+		args
+	): Promise<{
+		score: number;
+		strengths: string[];
+		gaps: string[];
+	}> => {
+		const openai = new OpenAI({
+			apiKey: process.env.OPENAI_API_KEY,
+		});
 
-    const relevantExperience = await ctx.runAction(
-      internal.proposals.searchRelevantCV,
-      {
-        userId: args.userId,
-        jobDescription: args.jobDescription,
-      }
-    );
+		const relevantExperience = await ctx.runAction(internal.proposals.searchRelevantCV, {
+			userId: args.userId,
+			jobDescription: args.jobDescription,
+		});
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `Analyze how well the candidate matches the job. Return JSON:
+		const completion = await openai.chat.completions.create({
+			model: "gpt-4o-mini",
+			messages: [
+				{
+					role: "system",
+					content: `Analyze how well the candidate matches the job. Return JSON:
 {
   "score": 0-100,
   "strengths": ["what makes them strong"],
   "gaps": ["what they might be missing"]
 }`,
-        },
-        {
-          role: "user",
-          content: `Job: ${args.jobDescription}\n\nCV: ${relevantExperience}`,
-        },
-      ],
-      response_format: { type: "json_object" },
-    });
+				},
+				{
+					role: "user",
+					content: `Job: ${args.jobDescription}\n\nCV: ${relevantExperience}`,
+				},
+			],
+			response_format: { type: "json_object" },
+		});
 
-    return JSON.parse(completion.choices[0].message.content!);
-  },
+		return JSON.parse(completion.choices[0].message.content!);
+	},
 });
